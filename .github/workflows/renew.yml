@@ -26,6 +26,8 @@ jobs:
       - name: 🚀 运行续期脚本
         env:
           MWS_TOKEN: ${{ secrets.MWS_TOKEN }}
+          DISCORD_TOKEN: ${{ secrets.DISCORD_TOKEN }}
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
           # 通知走 notify-gateway，统一发邮件 + Telegram（仓库不内置 SMTP/TG）
           NOTIFY_URL: ${{ secrets.NOTIFY_URL }}
           NOTIFY_TOKEN: ${{ secrets.NOTIFY_TOKEN }}

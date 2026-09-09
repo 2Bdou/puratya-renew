@@ -31,11 +31,17 @@ POST /api/sites/{id}/renew    # 网站续期
 
 进入你的仓库 → **Settings** → **Secrets and variables** → **Actions** → **New repository secret**，填：
 
-| Name           | 值                                   | 必填 |
-| -------------- | ------------------------------------ | ---- |
-| `MWS_TOKEN`    | 你的登录 token（下面教你怎么拿）       | ✅   |
-| `NOTIFY_URL`   | 通知网关上报地址（以 `/api/notify` 结尾） | ✅   |
-| `NOTIFY_TOKEN` | 网关里该项目分配的独立 Key           | ✅   |
+| Name             | 值                                   | 必填 |
+| ---------------- | ------------------------------------ | ---- |
+| `MWS_TOKEN`      | 面板登录 JWT（下面教你怎么拿）         | 建议 |
+| `DISCORD_TOKEN`  | Discord 用户 Token，JWT 过期后自动 OAuth 换票 | 自动换票必填 |
+| `GH_TOKEN`       | GitHub classic PAT，**只勾 `repo`**，用来把新 JWT 写回 `MWS_TOKEN` | 自动换票必填 |
+| `NOTIFY_URL`     | 通知网关上报地址（以 `/api/notify` 结尾） | ✅   |
+| `NOTIFY_TOKEN`   | 网关里该项目分配的独立 Key           | ✅   |
+
+> `DISCORD_TOKEN` + `GH_TOKEN` 配齐后，和 [bothosting](https://github.com/2Bdou/bothosting) 一样：JWT 过期（或剩余不到 7 天）时用 Discord 重新登录，并强制写回 `MWS_TOKEN`。只配 `MWS_TOKEN` 也能续期，但大约一个月后还是要手动抓一次。
+>
+> Actions 自带的 `GITHUB_TOKEN` **不能**改 Secrets，必须另建 classic PAT，Secret 名称就叫 `GH_TOKEN`。
 
 > `NOTIFY_URL` / `NOTIFY_TOKEN` 在网关后台 **项目详情页** 复制（网关的部署、SMTP / Telegram 配置见 [notify-gateway](https://github.com/2Bdou/notify-gateway) 的 README）。一个续期仓库对应网关里的一个项目，各用一把 Key。
 >
@@ -58,11 +64,29 @@ POST /api/sites/{id}/renew    # 网站续期
 
 也可以在同一请求里复制 `authorization: Bearer ` 后面的 JWT，内容和 Cookie 里那串是一样的。
 
-## ⚠️ Token 有效期
+## ⚠️ Token 有效期 / 自动换票
 
-`MWS_TOKEN` 是个 JWT，**约 26 天后过期**。过期后脚本会检测到，向网关上报一条 `token 已失效` 的失败通知，你重新抓一次新 token 更新到 Secret 即可。
+`MWS_TOKEN` 是个 JWT，**约 26 天后过期**。MWS 本身没有 refresh 接口（登录只有 Discord OAuth），所以不能「续 JWT」，只能重新登录拿一张新的。
 
-换过域名之后，如果 Actions 报 `未認証` / `无效なトークン` / token 已失效，先按上面步骤在 `cloud.m-ws.cc` **重新登录再抓一次**，不要继续用 puratya.com 时期的旧 token。
+自动换票（和 bothosting 同一套路）：
+
+1. 配 `DISCORD_TOKEN`（从 Discord 网页版 Network 里 `authorization` 字段复制，和 bothosting 用的是同一种）
+2. 配 `GH_TOKEN`（classic PAT，只勾 `repo`，建议永不过期）
+3. 脚本发现 JWT 失效或剩余不足 7 天时：向 MWS 要 OAuth `state` → 用 Discord Token 调 `oauth2/authorize` → 打开 `cloud-api.m-ws.cc/auth/callback` 拿到新 JWT → `gh secret set MWS_TOKEN`
+4. 日志里应出现 `MWS_TOKEN 已写回 GitHub Secrets`
+
+`DISCORD_TOKEN` 一般比 JWT 耐用得多（改密码 / 退出所有会话才会作废）。它失效时通知会写 `Discord Token 已失效（HTTP 401）`，再按下面步骤更新即可。
+
+没配 Discord 时，过期仍会通知你手动抓 `MWS_TOKEN`。
+
+## 怎么拿 DISCORD_TOKEN
+
+1. 浏览器登录 Discord **网页版**
+2. F12 → Network（网络）→ 点任意频道
+3. 找一条 API 请求，Request Headers 里的 `authorization` 就是（不要带 `Bot ` 前缀）
+4. 粘贴进 GitHub Secret `DISCORD_TOKEN`
+
+可以和 bothosting 仓库用同一串。不要把这串提交进 git。
 
 ## 改运行时间
 

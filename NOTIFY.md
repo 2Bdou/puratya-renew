@@ -22,7 +22,7 @@
 
 脚本 `renew.py` 在三种情况下上报：
 
-- **token 失效**：`level="failed"`，提醒你到 [cloud.m-ws.cc](https://cloud.m-ws.cc) 重新登录并更新 `MWS_TOKEN`。
+- **token 失效 / 即将过期**：若配了 `DISCORD_TOKEN`，先走 Discord OAuth 换新 JWT 并写回 Secret，上报 `token 已自动更新`；没配或 Discord 也失败，才 `level="failed"` 提醒你手动更新。
 - **账号下没有对象**：`level="success"`，正文说明跳过。
 - **正常续期**：按结果设 `level`——全部成功 `success`，有失败 `partial`；`data` 带 `total / success / failed`，`details` 里每个对象一条 `{id, name, status, error/message}`。
 

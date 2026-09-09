@@ -7,10 +7,11 @@ MWS (cloud.m-ws.cc) 自动续期脚本
      点一次 Renew 按钮 = POST /api/bots/{id}/renew，把倒计时重置回 7 天。
      本脚本每周一、三、五跑一次，把所有 Bot/Site 全部续期，永不停止。
 
-登录态：__Host-mrtcloud_token（JWT，约 26 天有效，过期需重新登录抓取）
+登录态：__Host-mrtcloud_token（JWT，约 26 天有效）。
+       过期或剩余不足 MWS_REFRESH_BEFORE_DAYS（默认 7 天）时，
+       若配置了 DISCORD_TOKEN，则走 Discord OAuth 换新 JWT（和 bothosting 同一套路），
+       再用 GH_TOKEN 写回 GitHub Secret MWS_TOKEN。
        也接受 Authorization: Bearer <token>。
-       2026-09 站长把面板从 cloud.puratya.com 迁到 cloud.m-ws.cc，
-       旧域名上的 Host-only Cookie 会被清掉，必须在新域名重新登录抓 token。
 
 通知：走 notify-gateway（notify.py 上报结构化结果，网关统一发邮件 + Telegram）。
      仓库只需配 NOTIFY_URL / NOTIFY_TOKEN，不内置 SMTP / TG。
@@ -25,6 +26,12 @@ from datetime import datetime
 
 import requests
 
+from auth import (
+    discord_relogin,
+    discord_token,
+    jwt_seconds_left,
+    persist_mws_token,
+)
 from notify import notify
 
 # 面板：https://cloud.m-ws.cc ；后端也可以直连 https://cloud-api.m-ws.cc（无 /api 前缀）
@@ -105,28 +112,88 @@ def _report(level, title, content, details):
         print("::warning::通知上报失败: {}".format(e))
 
 
-def main():
-    token = os.environ.get("MWS_TOKEN", "").strip()
-    if not token:
-        print("[✗] 环境变量 MWS_TOKEN 未设置")
-        sys.exit(1)
+def _manual_token_help():
+    return (
+        "请重新登录 {}，F12 抓取 {}，更新到 GitHub Secret MWS_TOKEN。"
+        "若要自动换票，再配 DISCORD_TOKEN + GH_TOKEN（与 bothosting 相同）。"
+    ).format(FRONTEND, COOKIE_NAME)
 
-    # 0) 验证 token 有效性
-    status, body = http("/auth/me", token=token)
-    if status == 401:
-        title = "⚠️ MWS token 已失效 ({})".format(now_str())
-        content = (
-            "请重新登录 {}，F12 抓取 {}，"
-            "更新到 GitHub Secret MWS_TOKEN。"
-            "（面板已从 cloud.puratya.com 迁到 cloud.m-ws.cc，旧域名抓的 token 不能再用）"
-        ).format(FRONTEND, COOKIE_NAME)
+
+def ensure_token():
+    """返回可用的 MWS JWT；必要时用 Discord OAuth 换新并写回 Secrets。"""
+    token = os.environ.get("MWS_TOKEN", "").strip()
+    dc = discord_token()
+    refresh_days = int(os.environ.get("MWS_REFRESH_BEFORE_DAYS", "7") or "7")
+    need_refresh = False
+    reason = ""
+    me_body = ""
+
+    if not token:
+        need_refresh = True
+        reason = "未设置 MWS_TOKEN"
+    else:
+        status, me_body = http("/auth/me", token=token)
+        if status == 401:
+            need_refresh = True
+            reason = "MWS_TOKEN 已失效（HTTP 401）"
+        elif status != 200:
+            print("[✗] 验证 token 异常: HTTP {} {}".format(status, me_body))
+            sys.exit(1)
+        else:
+            left = jwt_seconds_left(token)
+            if left is not None and left < refresh_days * 86400:
+                need_refresh = True
+                reason = "MWS_TOKEN 将在 {:.1f} 天后过期，提前换票".format(left / 86400.0)
+            elif left is not None:
+                print("[i] MWS_TOKEN 剩余约 {:.1f} 天".format(left / 86400.0))
+
+    if not need_refresh:
+        return token, me_body
+
+    print("[!] {}".format(reason))
+    if not dc:
+        title = "⚠️ MWS token 需要更新 ({})".format(now_str())
+        content = reason + "\n" + _manual_token_help()
         print(title)
         print(content)
         _report("failed", title, content, None)
         sys.exit(1)
-    if status != 200:
-        print("[✗] 验证 token 异常: HTTP {} {}".format(status, body))
+
+    try:
+        token = discord_relogin(dc)
+    except Exception as e:
+        title = "⚠️ MWS Discord 自动登录失败 ({})".format(now_str())
+        content = "{}\n{}\n{}".format(reason, e, _manual_token_help())
+        print(title)
+        print(content)
+        _report("failed", title, content, None)
         sys.exit(1)
+
+    wrote = persist_mws_token(token)
+    if not wrote:
+        print("[!] 新 token 仅用于本次运行；下次仍可能 401，请检查 GH_TOKEN")
+
+    status, me_body = http("/auth/me", token=token)
+    if status != 200:
+        title = "⚠️ 新 MWS token 验证失败 ({})".format(now_str())
+        content = "Discord 登录后 /auth/me HTTP {} {}".format(status, me_body)
+        print(title)
+        print(content)
+        _report("failed", title, content, None)
+        sys.exit(1)
+
+    extra = "已写回 GitHub Secret" if wrote else "未写回 Secret（缺 GH_TOKEN 或 gh 失败）"
+    _report(
+        "success",
+        "MWS token 已自动更新 ({})".format(now_str()),
+        "{}\n{}".format(reason, extra),
+        None,
+    )
+    return token, me_body
+
+
+def main():
+    token, body = ensure_token()
 
     try:
         who = json.loads(body).get("username")
